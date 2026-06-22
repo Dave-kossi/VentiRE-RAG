@@ -19,12 +19,12 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 
-print("--- [R&D] Initialisation des composants locaux (FastEmbed BGE-M3 & Mistral) ---")
-# CORRECTION : Nom du modèle adapté pour FastEmbed et suppression de l'argument 'cache_folder' problématique
-Settings.embed_model = FastEmbedEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+print("--- [Copilote] Initialisation des composants locaux (FastEmbed & Mistral) ---")
+# ALIGNEMENT : Utilisation stricte du même modèle qu'à l'étape d'indexation globale
+Settings.embed_model = FastEmbedEmbedding(model_name="BAAI/bge-large-en-v1.5")
 
 # 2. Configuration du LLM Français via Ollama (Température 0.0 pour un max de rigueur)
-Settings.llm = Ollama(model="mistral", request_timeout=500.0, temperature=0.0)
+Settings.llm = Ollama(model="mistral", request_timeout=600.0, temperature=0.0)
 
 def resolve_path(path: str | Path) -> Path:
     candidate = Path(path).expanduser()
@@ -33,16 +33,17 @@ def resolve_path(path: str | Path) -> Path:
     return BASE_DIR / candidate
 
 
-def build_qa_template(document_name: str = "RE2020") -> PromptTemplate:
+def build_qa_template() -> PromptTemplate:
+    """Génère le prompt multi-documents pour le Copilote VentiRE."""
     template_rag_francais = (
-        "Vous êtes un ingénieur expert chargé d'analyser un document technique ou réglementaire.\n"
-        f"Document de référence : {document_name}\n"
-        "Voici les extraits véridiques issus de ce document :\n"
+        "Vous êtes un ingénieur expert chargé d'analyser un corpus de documents techniques et réglementaires.\n"
+        "Voici les extraits véridiques et contextualisés issus de ces documents (référez-vous aux métadonnées ou aux titres si présents) :\n"
         "---------------------\n"
         "{context_str}\n"
         "---------------------\n"
-        "En vous basant uniquement sur les extraits ci-dessus, répondez de manière précise et technique "
-        "à la question suivante. Si l'information n'est pas présente dans le contexte, dites humblement "
+        "En vous basant uniquement sur les extraits ci-dessus, répondez de manière précise, structurée et technique "
+        "à la question suivante. Mentionnez le nom du document ou de la section source si l'information y est explicitement liée.\n"
+        "Si l'information n'est pas présente dans le contexte fourni, dites humblement "
         "que vous ne savez pas, n'inventez rien.\n"
         "Question : {query_str}\n"
         "Réponse détaillée en français :"
@@ -53,13 +54,12 @@ def build_qa_template(document_name: str = "RE2020") -> PromptTemplate:
 def run_french_rag_system(
     query: str,
     storage_dir: str | Path = "./storage_re2020",
-    document_name: str = "RE2020",
 ):
     storage_dir = resolve_path(storage_dir)
     if not storage_dir.exists():
         raise FileNotFoundError(f"Dossier de stockage introuvable : {storage_dir}")
 
-    # Reconstitution du stockage local généré à l'étape 2 (Structure Parent-Enfant)
+    # Reconstitution du stockage local multi-documents généré à l'étape 2
     storage_context = StorageContext.from_defaults(persist_dir=str(storage_dir))
     index = VectorStoreIndex(nodes=[], storage_context=storage_context)
     
@@ -83,15 +83,15 @@ def run_french_rag_system(
         reranker = CohereRerank(api_key=cohere_api_key, top_n=3, model="rerank-multilingual-v3.0")
         node_postprocessors.append(reranker)
         
-    # Assemblage du Query Engine avec notre Prompt personnalisé
+    # Assemblage du Query Engine avec notre Prompt personnalisé (Correction du TypeError ici)
     query_engine = RetrieverQueryEngine.from_args(
         retriever=hybrid_retriever,
         node_postprocessors=node_postprocessors,
-        text_qa_template=build_qa_template(document_name)
+        text_qa_template=build_qa_template()  # Suppression de l'argument obsolète
     )
     
-    print(f"\n [Question] : {query}")
-    print("-> Mistral analyse les sources locales et rédige la synthèse réglementaire...\n")
+    print(f"\n🚀 [Question] : {query}")
+    print("-> Mistral analyse le corpus de documents et rédige la synthèse...\n")
     
     # Exécution du RAG complet
     response = query_engine.query(query)
@@ -99,7 +99,7 @@ def run_french_rag_system(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Interroge un index documentaire local avec le RAG.")
+    parser = argparse.ArgumentParser(description="Interroge le corpus documentaire local avec le Copilote.")
     parser.add_argument(
         "query",
         nargs="?",
@@ -110,13 +110,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "-s",
         "--storage-dir",
         default="./storage_re2020",
-        help="Dossier de stockage généré par hiera.py.",
-    )
-    parser.add_argument(
-        "-d",
-        "--document-name",
-        default="RE2020",
-        help="Nom affiché dans le prompt de réponse.",
+        help="Dossier de stockage généré par l'indexation.",
     )
     return parser
 
@@ -125,10 +119,10 @@ if __name__ == "__main__":
     storage_dir = resolve_path(args.storage_dir)
     
     if storage_dir.exists():
-        rag_response = run_french_rag_system(args.query, storage_dir, args.document_name)
+        rag_response = run_french_rag_system(args.query, storage_dir)
         
-        print(f"=== RÉPONSE DE MISTRAL (RAG {args.document_name}) ===")
+        print("=== RÉPONSE DE MISTRAL (Copilote Multi-Docs) ===")
         print(rag_response)
-        print("========================================\n")
+        print("================================================\n")
     else:
-        print(f"Erreur : Le dossier {storage_dir} n'existe pas. Relance d'abord l'indexation.")
+        print(f"Erreur : Le dossier {storage_dir} n'existe pas. Relancez d'abord l'indexation globale.")
